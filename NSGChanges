@@ -1,0 +1,96 @@
+$connectionName = "AzureRunAsConnection"
+try
+{
+    # Get the connection "AzureRunAsConnection "
+    $servicePrincipalConnection=Get-AutomationConnection -Name $connectionName         
+
+    "Logging in to Azure..."
+    Add-AzureRmAccount `
+        -ServicePrincipal `
+        -TenantId $servicePrincipalConnection.TenantId `
+        -ApplicationId $servicePrincipalConnection.ApplicationId `
+        -CertificateThumbprint $servicePrincipalConnection.CertificateThumbprint 
+}
+catch {
+    if (!$servicePrincipalConnection)
+    {
+        $ErrorMessage = "Connection $connectionName not found."
+        throw $ErrorMessage
+    } else{
+        Write-Error -Message $_.Exception
+        throw $_.Exception
+    }
+}
+
+#Get the current config of the NSG
+$nsgconfig = Get-AzureRmNetworkSecurityGroup -Name 'xxxx' -ResourceGroupName 'xxxx' | Get-AzureRmNetworkSecurityRuleConfig
+$formattedConfig = $nsgconfig |format-list -Property Name,Protocol,SourcePortRange,DestinationPortRange,SourceAddressPrefix,DestinationAddressPrefix,SourceApplicationSecurityGroups,DestinationApplicationSecurityGroups,Access,Priority,Direction | Out-String
+
+function GitPush(){
+    $devOpsToken = Get-AzureKeyVaultSecret -VaultName 'xxxx' -name 'DevOpsAPI'
+    $devOpsTokenSecret = $devOpsToken.SecretValueText
+    $repositoryId = "xxxx"
+    $method1 = "GET"
+    $method2 = "POST"
+    $organization = "xxxx.visualstudio.com"
+    $project = "Network%20Management"
+    $devOpsUrl = "https://$organization/$project/_apis/git/repositories/$repositoryId/pushes?api-version=5.1"
+    $headers1 = @{"method"=$method1; "authority"="xxxx.visualstudio.com"; "authorization" = "Basic $DevOpsTokenSecret"; "scheme"="https"}
+    $headers2 = @{"method"=$method2; "authority"="xxxx.visualstudio.com"; "authorization" = "Basic $DevOpsTokenSecret"; "scheme"="https"}
+
+    #Get the old Object Id
+    $commitUri = "https://$organization/$project/_git/$project/commits?__rt=fps&__ver=2"
+    $commit = Invoke-webrequest -uri $commitUri -Headers $headers1 -Method $method1 -UseBasicParsing -ContentType "application/json"
+    $oldObjectId = ($commit | ConvertFrom-Json).fps.dataProviders.data.'ms.vss-code-web.commits-data-provider'.commits.commitId[0]
+
+    #Form the body of the POST
+    $bodyPart1 = '{
+        "refUpdates": [
+          {
+            "name": "refs/heads/master",
+            "oldObjectId": "'
+            
+    $bodyPart2='"
+          }
+        ],
+        "commits": [
+          {
+            "comment": "Updated p-nsg-01",
+            "changes": [
+              {
+                "changeType": "edit",
+                "item": {
+                  "path": "/Security/NSGConfigs/nsg01goldmaster.txt"
+                },
+                "newContent": {
+                  "content": "'
+    $bodyPart3='",
+                  "contentType": "rawtext"
+                }
+              }
+            ]
+          }
+        ]
+      }'
+    $body = $bodyPart1 + $oldObjectId + $bodyPart2 + $formattedConfig + $bodyPart3
+    Invoke-WebRequest -Uri $devOpsUrl -Method $method2 -Headers $headers2 -ContentType "application/json" -Body $body -UseBasicParsing -ErrorAction Stop -TimeoutSec 30
+
+    #Get the new commit ID
+    $commitUri = "https://$organization/$project/_git/$project/commits?__rt=fps&__ver=2"
+    $commit = Invoke-webrequest -uri $commitUri -Headers $headers1 -Method $method1 -UseBasicParsing -ContentType "application/json"
+    $newObjectId = ($commit | ConvertFrom-Json).fps.dataProviders.data.'ms.vss-code-web.commits-data-provider'.commits.commitId[0]
+
+    #Now check for changes and alert if there are any
+    $diffsUri = "https://xxxx.visualstudio.com/Network%20Management/_apis/git/repositories/(insert repository ID here)/diffs/commits?baseversion=$oldObjectId&baseversiontype=commit&targetversion=$newObjectId&targetversiontype=commit&api-version=5.1" 
+    $diffs = invoke-webrequest -Uri $diffsUri -headers $headers1 -Method $method1 -UseBasicParsing
+    if (($diffs | ConvertFrom-Json).changes.changeType[0]) {
+      function sendmail ([string]$report) {
+        $emailAddress = "xxxx@xxxx.org"
+        $cred = Get-AutomationPSCredential -Name "xxxx"
+        Send-MailMessage -to $emailAddress  -From "xxxx@xxxx.org" -SmtpServer "smtp.office365.com" -Port 587 -UseSsl -Credential $cred -Subject "NSG p-nsg-01 modified" -Body "https://xxxx.visualstudio.com/Network%20Management/_git/Network%20Management/pushes"
+    }
+    sendmail
+
+    }
+}
+GitPush
