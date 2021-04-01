@@ -1,0 +1,33 @@
+using namespace System.Net
+
+# Input bindings are passed in via param block.
+param($Request, $TriggerMetadata)
+
+
+# Interact with query parameters or the body of the request.
+$ipaddress = $Request.Query.ipaddress
+if (-not $ipaddress) {
+    $name = $Request.Body.ipaddress
+}
+# Write to the Azure Functions log stream.
+Write-Host "PowerShell HTTP trigger function processed a request."
+$ipGroup = Get-AzIpGroup -Name "p-ipg-exchangeclients" -ResourceGroupName "p-ipg-exchangeclients"
+if ($ipGroup.IpAddresses.Contains($ipaddress)) {
+    return
+}
+else {
+   $ipGroup.IpAddresses.Add($ipaddress)
+Set-AzIpGroup -IpGroup $ipGroup
+$body = "This HTTP triggered function executed successfully."
+
+if ($ipaddress) { 
+}
+
+    $body = "The IP address $ipaddress has been added to the IP Group $ipGroup.IpAddresses"
+}
+
+# Associate values to output bindings by calling 'Push-OutputBinding'.
+Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    StatusCode = [HttpStatusCode]::OK
+    Body = $body
+})
